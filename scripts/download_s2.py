@@ -122,8 +122,6 @@ def main(args):
     num_rows = df.shape[0]
 
     # Initialize stats and result tracking
-    num_retries = 0
-    num_error_hits = 0
     num_empty_hits = 0
     progress_bar = tqdm(total=args.high - args.low)
     results = []
@@ -134,22 +132,7 @@ def main(args):
         # Select a random row from GeoParquet file
         random_row = np.random.randint(0, num_rows)
 
-        # Attempt to get this item with progressive exponential backoff
-        item = None
-        for j in range(4):
-            try:
-                item = collection.get_item(df.iloc[random_row]["id"])
-                break
-            except Exception as e:
-                print(e)
-                print("retrying", random_row, j)
-                num_retries += 1
-                time.sleep(2**j)
-
-        if item is None:
-            print(f"failed to get item {random_row}")
-            num_error_hits += 1
-            continue
+        item = collection.get_item(df.iloc[random_row]["id"])
 
         # Load selected STAC item into a multi-band raster stack
         with warnings.catch_warnings():
@@ -258,8 +241,6 @@ def main(args):
     print(f"range: [{args.low}, {args.high})")
     print(f"num hits: {len(results)}")
     print(f"num empty hits: {num_empty_hits}")
-    print(f"num error hits: {num_error_hits}")
-    print(f"num retries: {num_retries}")
 
 
 if __name__ == "__main__":

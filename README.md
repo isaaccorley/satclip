@@ -30,6 +30,12 @@ with torch.no_grad():
     probs = logits_per_image.softmax(dim=-1).detach().cpu().numpy()
 ```
 
+Minimal local setup with `uv`:
+
+```bash
+uv sync --python 3.12 --group dev
+```
+
 ## Training
 
 You first need to download the *S2-100k* dataset. This can be done directly via [Hugging Face](https://huggingface.co/datasets/davanstrien/satclip), using the `huggingface_hub` library:
@@ -77,6 +83,65 @@ model = get_satclip(
 model.eval()
 with torch.no_grad():
     emb = model(c.double().to(device)).detach().cpu()
+```
+
+For a location-only inference path without Lightning or the vision encoder stack:
+
+```python
+from huggingface_hub import hf_hub_download
+from satclip.location_encoder_only import load_location_encoder_checkpoint
+import torch
+
+ckpt_path = hf_hub_download("microsoft/SatCLIP-ViT16-L40", "satclip-vit16-l40.ckpt")
+model = load_location_encoder_checkpoint(ckpt_path, device=device)
+
+with torch.no_grad():
+    emb = model(c.to(device=device, dtype=torch.float64)).cpu()
+```
+
+For a literal standalone file with no imports from the `satclip` package internals, see
+[`scripts/load_pretrained_location_encoder_standalone.py`](scripts/load_pretrained_location_encoder_standalone.py).
+It contains only the pretrained path used here: analytic spherical harmonics + SIREN + checkpoint load.
+
+The location-only loader now uses a numerically stable recurrence for the `analytic`
+spherical harmonics path, which means pure `float32` inference no longer blows up
+for high-degree checkpoints such as `L=40`.
+
+For lower memory, pure `float32` now works:
+
+```python
+model = load_location_encoder_checkpoint(
+    ckpt_path,
+    device=device,
+    dtype=torch.float32,
+)
+
+with torch.inference_mode():
+    emb = model(c.to(device=device, dtype=torch.float32), chunk_size=8192).cpu()
+```
+
+If you want the most conservative accuracy path, keep spherical harmonics in `float64`
+but run the neural network in `float32`:
+
+```python
+model = load_location_encoder_checkpoint(
+    ckpt_path,
+    device=device,
+    dtype=torch.float32,
+    posenc_compute_dtype=torch.float64,
+)
+
+with torch.inference_mode():
+    emb = model(c.to(device=device, dtype=torch.float32), chunk_size=8192).cpu()
+```
+
+This hybrid mode usually tracks `float64` a bit more closely while still cutting
+activation and weight memory in the SIREN.
+
+To strip a full SatCLIP checkpoint down to the compact location-only payload:
+
+```bash
+python3 scripts/extract_location_encoder.py satclip-vit16-l40.ckpt satclip-vit16-l40-location-only.ckpt
 ```
 
 ## Examples

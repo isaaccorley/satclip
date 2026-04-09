@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "satclip"
+version = "0.1.0"
+description = "SatCLIP location encoder utilities and training code."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "einops>=0.8,<1",
+    "numpy>=1.26,<3",
+    "torch>=2.5,<3",
+]
+
+[project.optional-dependencies]
+hub = [
+    "huggingface-hub>=0.30,<2",
+]
+
+[dependency-groups]
+dev = [
+    "huggingface-hub>=0.30,<2",
+    "pytest>=8,<10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["satclip*"]
