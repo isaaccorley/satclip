@@ -43,7 +43,7 @@ def get_s2_train_transform(resize_crop_size = 256):
     ])
 
     def transform(sample):
-        image = sample["image"] / 10000.0
+        image = sample["image"].astype(np.float32) / 10000.0
         point = sample["point"]
         image = torch.tensor(image)
         image = augmentation(image)
@@ -61,7 +61,8 @@ def get_pretrained_s2_train_transform(resize_crop_size = 256):
     ])
 
     def transform(sample):
-        image = sample["image"] / 10000.0
+        # S2Geo now hands back raw uint16; cast here to preserve prior behaviour.
+        image = sample["image"].astype(np.float32) / 10000.0
         point = sample["point"]
 
         B10 = np.zeros((1, *image.shape[1:]), dtype=image.dtype)
@@ -73,6 +74,25 @@ def get_pretrained_s2_train_transform(resize_crop_size = 256):
         point = coordinate_jitter(point)
 
         return dict(image=image, point=point)
+
+    return transform
+
+def get_uint16_train_transform():
+    """Lean transform for the GPU-augmentation path.
+
+    Returns the raw uint16, 12-band image untouched (only ~1.5 MB/sample crosses
+    the worker->main boundary, vs ~3.4 MB for float32 13-band). The float cast,
+    /10000 scaling, B10 zero-band insertion, random flips and GaussianBlur are all
+    done on the GPU in SatCLIPLightningModule.on_after_batch_transfer, which keeps
+    the augmentation math identical (verified) while ~halving PCIe traffic.
+
+    Assumes patches are already at the model resolution (256), so RandomCrop(256)
+    is a no-op and is dropped.
+    """
+    def transform(sample):
+        image = np.ascontiguousarray(sample["image"])  # uint16 [12, H, W]
+        point = coordinate_jitter(sample["point"])
+        return dict(image=torch.from_numpy(image), point=point)
 
     return transform
 

@@ -65,13 +65,13 @@ class SoftSatCLIPLoss(nn.Module):
         self.prev_num_logits = 0
         self.labels = {}
 
-    def forward(self, logits_per_image, logits_per_coord, autocorrelations_per_image=None, output_dict=False):
+    def forward(self, logits_per_image, logits_per_coord, weights=None, output_dict=False):
         device = logits_per_image.device
 
-        if autocorrelations_per_image is None:
-            autocorrelations_per_image = torch.ones((logits_per_image.shape[0], logits_per_image.shape[1]), device=logits_per_image.device)
+        if weights is None:
+            weights = torch.ones((logits_per_image.shape[0], logits_per_image.shape[1]), device=logits_per_image.device)
 
-        log_w = autocorrelations_per_image.log()
+        log_w = weights.log()
         weighted_logits_per_image = log_w + logits_per_image
         weighted_logits_per_coord = log_w.t() + logits_per_coord
 

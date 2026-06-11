@@ -262,6 +262,9 @@ class VisionTransformer(nn.Module):
 class SatCLIP(nn.Module):
     def __init__(self,
                  loss_type: str,
+                 soft_loss_penalty: str,
+                 soft_loss_rho_km: float,
+                 soft_loss_tau_km: float,
                  embed_dim: int,
                  # vision
                  image_resolution: int,
@@ -347,21 +350,42 @@ class SatCLIP(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
         self.loss_type = loss_type
+        self.soft_loss_penalty = soft_loss_penalty
+        self.soft_loss_rho_km = soft_loss_rho_km
+        self.soft_loss_tau_km = soft_loss_tau_km
 
         self.initialize_parameters()
 
-    def autocorrelations(self, coords):
-        # Returns W, [global_batch_size, global_batch_size]
-        # Coords: [global_batch_size, 3]
+    def pairwise_weights(self, coords):
+        # Returns a [B, B] pairwise weight matrix W in [eps, 1] for SoftSatCLIPLoss.
+        # w_ij is a monotonically increasing function of geographic distance: nearby
+        # off-diagonal pairs get w < 1 (down-weighted -> treated as soft positives,
+        # not hard negatives), distant pairs approach 1 (full hard negative). The
+        # diagonal is forced to 1 so the positive term log_w = 0 is left unchanged.
+        # rho is the length-scale (km); tau is the sigmoid width (km).
         device = coords.device
         B = coords.shape[0]
-        spatial_correlations = torch.ones((B, B), device=device)
+        eps = 1e-6
+        d = pairwise_haversine_dist(coords)
+        rho = self.soft_loss_rho_km
 
-        spatial_correlations = torch.clamp(pairwise_haversine_dist(coords) + torch.eye(B, device=device), 0.0, 1.0)
+        if self.soft_loss_penalty == "linear":
+            # piecewise-linear ramp, saturating at rho (the original form, rho=1 -> 1km clamp)
+            w = torch.clamp(d / rho, 0.0, 1.0)
+        elif self.soft_loss_penalty == "exponential":
+            # smooth, no hard cutoff; w(rho) = 1 - 1/e ~= 0.63
+            w = 1.0 - torch.exp(-d / rho)
+        elif self.soft_loss_penalty == "sigmoid":
+            # S-curve centred at rho with width tau; w(rho) = 0.5
+            w = torch.sigmoid((d - rho) / self.soft_loss_tau_km)
+        else:
+            raise ValueError(f"unknown soft_loss_penalty: {self.soft_loss_penalty!r}")
 
-        autocorrelations =  spatial_correlations 
-
-        return autocorrelations
+        w = torch.clamp(w, eps, 1.0)
+        # force diagonal (self / positive pairs) to weight 1 -> log_w = 0
+        eye = torch.eye(B, device=device)
+        w = w * (1.0 - eye) + eye
+        return w
 
     def initialize_parameters(self):
         if isinstance(self.visual, ModifiedResNet):
@@ -392,11 +416,12 @@ class SatCLIP(nn.Module):
 
 
     def forward(self, image, coords):
-        # Main difference with this forward over base, is that soft_loss also returns autocorrelations, which are used to weight the logits in the loss function
+        # Main difference over the base forward: soft_loss also returns a pairwise
+        # weight matrix, used to down-weight spatially-close pairs in the loss.
 
-        image_features = self.encode_image(image)     
+        image_features = self.encode_image(image)
         location_features = self.encode_location(coords).float()
-        
+
         # normalized features
         image_features = image_features / image_features.norm(dim=1, keepdim=True)
         location_features = location_features / location_features.norm(dim=1, keepdim=True)
@@ -406,15 +431,10 @@ class SatCLIP(nn.Module):
         logits_per_image = logit_scale * image_features @ location_features.t()
         logits_per_location = logits_per_image.t()
 
-        # autocorrelations
-        if self.loss_type == "soft_loss":
-            autocorrelations_per_image = self.autocorrelations(coords)
-        else:
-            autocorrelations_per_image = None
-
         # shape = [global_batch_size, global_batch_size]
         if self.loss_type == "soft_loss":
-            return logits_per_image, logits_per_location, autocorrelations_per_image
+            weights = self.pairwise_weights(coords)
+            return logits_per_image, logits_per_location, weights
         else:
             return logits_per_image, logits_per_location
 

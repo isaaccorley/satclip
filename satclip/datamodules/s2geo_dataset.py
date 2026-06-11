@@ -12,7 +12,7 @@ import torch
 import lightning.pytorch as pl
 from torch.utils.data import DataLoader
 
-from .transforms import get_pretrained_s2_train_transform, get_s2_train_transform
+from .transforms import get_pretrained_s2_train_transform, get_s2_train_transform, get_uint16_train_transform
 
 CHECK_MIN_FILESIZE = 10000 # 10kb
 
@@ -26,18 +26,24 @@ class S2GeoDataModule(pl.LightningDataModule):
         val_random_split_fraction: float = 0.1,
         transform: str = 'pretrained',
         mode: str = "both",
+        pin_memory: bool = False,
     ):
         super().__init__()
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.pin_memory = pin_memory
         if transform=='pretrained':
             self.train_transform = get_pretrained_s2_train_transform(resize_crop_size=crop_size)
         elif transform=='default':
             self.train_transform = get_s2_train_transform()
+        elif transform=='gpu':
+            # workers hand off raw uint16; float cast + B10 + augmentation happen on
+            # the GPU in SatCLIPLightningModule.on_after_batch_transfer
+            self.train_transform = get_uint16_train_transform()
         else:
             self.train_transform = transform
-            
+
         self.val_random_split_fraction = val_random_split_fraction
         self.mode = mode
         self.save_hyperparameters()
@@ -61,6 +67,9 @@ class S2GeoDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             shuffle=True,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=4 if self.num_workers > 0 else None,
         )
 
     def val_dataloader(self):
@@ -69,7 +78,9 @@ class S2GeoDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             shuffle=False,
-            #persistent_workers=True if self.num_workers > 0 else False,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=4 if self.num_workers > 0 else None,
         )
 
     def test_dataloader(self):
@@ -84,11 +95,12 @@ class S2Geo(NonGeoDataset):
     such scenes).
     """
 
+    # Presence of the index and image dir is enough; specific patch indices are
+    # mirror-specific (the davanstrien/satclip HF mirror ships ~94,164 of the
+    # 100,000 patches index.csv references, and is missing patch_99999.tif).
     validation_filenames = [
         "index.csv",
         "images/",
-        "images/patch_0.tif",
-        "images/patch_99999.tif",
     ]
 
     def __init__(
@@ -117,8 +129,15 @@ class S2Geo(NonGeoDataset):
         self.points = []
 
         n_skipped_files = 0
+        n_missing_files = 0
         for i in range(df.shape[0]):
             filename = os.path.join(self.root, "images", df.iloc[i]["fn"])
+
+            # index.csv may reference patches absent from this mirror; skip them
+            # (deterministic given a fixed index, so every run sees the same set).
+            if not os.path.exists(filename):
+                n_missing_files += 1
+                continue
 
             if os.path.getsize(filename) < CHECK_MIN_FILESIZE:
                 n_skipped_files += 1
@@ -131,6 +150,8 @@ class S2Geo(NonGeoDataset):
 
         print(f"skipped {n_skipped_files}/{len(df)} images because they were smaller "
               f"than {CHECK_MIN_FILESIZE} bytes... they probably contained nodata pixels")
+        print(f"skipped {n_missing_files}/{len(df)} images missing from this dataset mirror")
+        print(f"using {len(self.filenames)} images")
 
     def __getitem__(self, index: int) -> Dict[str, Tensor]:
         """Return an index within the dataset.
@@ -144,8 +165,7 @@ class S2Geo(NonGeoDataset):
 
         if self.mode == "both":
             with rasterio.open(self.filenames[index]) as f:
-                data = f.read().astype(np.float32)
-            #img = torch.tensor(data)
+                data = f.read()  # raw uint16; the transform decides the dtype
             sample["image"] = data
             
         if self.transform is not None:
