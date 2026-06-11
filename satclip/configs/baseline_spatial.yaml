@@ -1,16 +1,16 @@
 # lightning.pytorch==2.0.0
-# Soft-loss SatCLIP, linear distance->weight penalty (rho=1000 km).
-# Identical to baseline.yaml except the model.soft_loss_* keys.
+# Baseline SatCLIP: original contrastive loss. Identical hparams to softloss.yaml
+# except `model.loss_type`. Used as the control for the soft-loss convergence study.
 seed_everything: 0
 trainer:
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: satclip-softloss
-      name: 'satclip_softloss_linear'
-      save_dir: '/projects/bgtj/isaaccorley/satclip_runs/softloss_linear'
+      name: 'satclip_baseline_spatial'
+      save_dir: '/projects/bgtj/isaaccorley/satclip_runs/baseline_spatial'
       group: 'softloss-vs-baseline'
-      tags: ['softloss', 'linear']
+      tags: ['baseline', 'satclip_loss']
       log_model: false
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
@@ -18,13 +18,10 @@ trainer:
         monitor: "val_loss"
         save_last: True
         filename: "{epoch}-{val_loss:.2f}"
-        dirpath: '/projects/bgtj/isaaccorley/satclip_runs/softloss_linear/checkpoints'
+        dirpath: '/projects/bgtj/isaaccorley/satclip_runs/baseline_spatial/checkpoints'
   max_epochs: 500
 model:
-  loss_type: soft_loss
-  soft_loss_penalty: linear
-  soft_loss_rho_km: 20
-  soft_loss_tau_km: 100.0
+  loss_type: satclip_loss
   embed_dim: 256
   image_resolution: 256
   vision_layers: 4

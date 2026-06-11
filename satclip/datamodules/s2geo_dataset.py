@@ -10,11 +10,56 @@ import numpy as np
 import torch
 
 import lightning.pytorch as pl
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 
 from .transforms import get_pretrained_s2_train_transform, get_s2_train_transform, get_uint16_train_transform
 
 CHECK_MIN_FILESIZE = 10000 # 10kb
+
+
+class SpatialBatchSampler(Sampler):
+    """Yield spatially-coherent batches (each batch is a local k-NN cluster).
+
+    Random batching of globally-sampled S2-100K gives ~250 km within-batch
+    nearest-neighbour distances, so a physically-scaled soft loss (rho ~ 20 km)
+    never activates. Grouping each batch from a point's nearest unused neighbours
+    drops within-batch NN to the dataset's true ~17 km scale, so nearby pairs
+    actually appear and the soft penalty engages. Greedy + reshuffled per epoch.
+    """
+
+    def __init__(self, coords_lonlat, batch_size, shuffle=True, seed=0):
+        from sklearn.neighbors import BallTree
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.seed = seed
+        self.n = len(coords_lonlat)
+        # BallTree haversine wants [lat, lon] in radians
+        self.latlon = np.deg2rad(np.asarray(coords_lonlat, dtype=np.float64)[:, [1, 0]])
+        self.tree = BallTree(self.latlon, metric="haversine")
+        self._epoch = 0
+
+    def __len__(self):
+        return (self.n + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self):
+        rng = np.random.default_rng(self.seed + self._epoch)
+        self._epoch += 1
+        used = np.zeros(self.n, dtype=bool)
+        order = rng.permutation(self.n) if self.shuffle else np.arange(self.n)
+        # query a generous neighbourhood so enough are still unused late in the epoch
+        k = int(min(self.n, self.batch_size * 8))
+        for anchor in order:
+            if used[anchor]:
+                continue
+            _, nbr = self.tree.query(self.latlon[anchor : anchor + 1], k=k)
+            nbr = nbr[0]
+            batch = nbr[~used[nbr]][: self.batch_size].tolist()
+            if len(batch) < self.batch_size:
+                # end-of-epoch scattered remainder: top up with any unused points
+                rem = np.setdiff1d(np.where(~used)[0], np.asarray(batch, dtype=int))
+                batch += rem[: self.batch_size - len(batch)].tolist()
+            used[batch] = True
+            yield batch
 
 class S2GeoDataModule(pl.LightningDataModule):
     def __init__(
@@ -27,12 +72,14 @@ class S2GeoDataModule(pl.LightningDataModule):
         transform: str = 'pretrained',
         mode: str = "both",
         pin_memory: bool = False,
+        spatial_batching: bool = False,
     ):
         super().__init__()
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
+        self.spatial_batching = spatial_batching
         if transform=='pretrained':
             self.train_transform = get_pretrained_s2_train_transform(resize_crop_size=crop_size)
         elif transform=='default':
@@ -61,27 +108,30 @@ class S2GeoDataModule(pl.LightningDataModule):
         N_train = len(dataset) - N_val
         self.train_dataset, self.val_dataset = torch.utils.data.random_split(dataset, [N_train, N_val])
 
-    def train_dataloader(self):
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.batch_size,
+    def _coords_for(self, subset):
+        # subset-local coords aligned to the Subset's positional indices
+        full = subset.dataset
+        return np.asarray(full.points, dtype=np.float64)[np.asarray(subset.indices)]
+
+    def _make_loader(self, dataset, shuffle):
+        kw = dict(
             num_workers=self.num_workers,
-            shuffle=True,
             pin_memory=self.pin_memory,
             persistent_workers=self.num_workers > 0,
             prefetch_factor=4 if self.num_workers > 0 else None,
         )
+        if self.spatial_batching:
+            sampler = SpatialBatchSampler(
+                self._coords_for(dataset), self.batch_size, shuffle=shuffle, seed=0
+            )
+            return DataLoader(dataset, batch_sampler=sampler, **kw)
+        return DataLoader(dataset, batch_size=self.batch_size, shuffle=shuffle, **kw)
+
+    def train_dataloader(self):
+        return self._make_loader(self.train_dataset, shuffle=True)
 
     def val_dataloader(self):
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            shuffle=False,
-            pin_memory=self.pin_memory,
-            persistent_workers=self.num_workers > 0,
-            prefetch_factor=4 if self.num_workers > 0 else None,
-        )
+        return self._make_loader(self.val_dataset, shuffle=False)
 
     def test_dataloader(self):
         raise NotImplementedError

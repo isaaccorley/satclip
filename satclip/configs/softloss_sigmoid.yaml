@@ -23,8 +23,8 @@ trainer:
 model:
   loss_type: soft_loss
   soft_loss_penalty: sigmoid
-  soft_loss_rho_km: 1000
-  soft_loss_tau_km: 200
+  soft_loss_rho_km: 20
+  soft_loss_tau_km: 10
   embed_dim: 256
   image_resolution: 256
   vision_layers: 4
@@ -47,4 +47,5 @@ data:
   val_random_split_fraction: 0.1
   transform: gpu
   pin_memory: true
+  spatial_batching: true
 watchmodel: True
