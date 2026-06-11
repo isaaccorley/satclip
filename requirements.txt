@@ -1,0 +1,16 @@
+torch
+torchvision
+lightning
+jsonargparse[signatures]
+torchgeo
+rasterio
+rioxarray
+pandas
+numpy
+scikit-learn
+matplotlib
+albumentations
+timm
+tensorboard
+wandb
+huggingface_hub
