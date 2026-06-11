@@ -23,7 +23,7 @@ trainer:
 model:
   loss_type: soft_loss
   soft_loss_penalty: linear
-  soft_loss_rho_km: 1000
+  soft_loss_rho_km: 2000
   soft_loss_tau_km: 100.0
   embed_dim: 256
   image_resolution: 256
