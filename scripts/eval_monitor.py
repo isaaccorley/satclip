@@ -20,20 +20,26 @@ import torch
 RUNS = "/projects/bgtj/isaaccorley/satclip_runs"
 # label -> (run dir, slurm job name)
 CACHED = {
-    "baseline_random(rho0)": ("vit16l40c_baseline_random", "vitc_base_rand"),
-    "baseline(rho0)": ("vit16l40c_baseline", "vitc_baseline"),
-    "soft_linear(rho20)": ("vit16l40c_linear", "vitc_linear"),
-    "soft_exp(rho20)": ("vit16l40c_exp", "vitc_exp"),
-    "soft_sigmoid(rho20)": ("vit16l40c_sigmoid", "vitc_sigmoid"),
-    "soft_linear(rho50)": ("vit16l40c_linear_rho50", "vitc_lin50"),
-    "soft_linear(rho100)": ("vit16l40c_linear_rho100", "vitc_lin100"),
-    "soft_linear(rho200)": ("vit16l40c_linear_rho200", "vitc_lin200"),
+    # mixed batching (random anchors + nearest neighbour); pure-random reproduction ref
+    "baseline_mixed(rho0)": ("vit16l40c_base_e", "vitc_base_e"),
+    "soft_linear_mixed(rho20)": ("vit16l40c_lin_e", "vitc_lin_e"),
+    "baseline_random(rho0)": ("vit16l40c_rand_e", "vitc_rand_e"),
 }
 PRETRAINED = "/u/isaaccorley/github/neuralftw/weights/satclip-location-encoder.pt"
 RESULTS = f"{RUNS}/eval_results.csv"
 EVAL_SBATCH = "/u/isaaccorley/github/satclip/slurm/eval_once.sh"
-STEP, POLL = 5, 90
+POLL = 45
 STOP_PATIENCE, MIN_EVALS = 3, 5   # cancel after this many declining milestones past peak
+
+
+def current_milestone(ep):
+    # eval at epochs 1,2,3,4,5 then every 5 (10,15,20,...): finest at the very start,
+    # where downstream performance peaks. Returns the latest milestone <= ep (or None).
+    if ep < 1:
+        return None
+    if ep <= 5:
+        return ep
+    return (ep // 5) * 5
 
 
 def epoch_of(ckpt):
@@ -94,8 +100,8 @@ def main():
             ck = f"{RUNS}/{d}/checkpoints/last.ckpt"
             if not os.path.exists(ck):
                 continue
-            ms = (epoch_of(ck) // STEP) * STEP
-            if ms >= STEP and (label, str(ms)) not in done:
+            ms = current_milestone(epoch_of(ck))
+            if ms is not None and (label, str(ms)) not in done:
                 snap = f"{RUNS}/{d}/checkpoints/eval_epoch{ms}.ckpt"
                 shutil.copyfile(ck, snap)
                 pending.append({"label": label, "ckpt": snap, "epoch": str(ms)})

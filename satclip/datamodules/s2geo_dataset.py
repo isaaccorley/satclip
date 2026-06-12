@@ -18,22 +18,25 @@ CHECK_MIN_FILESIZE = 10000 # 10kb
 
 
 class SpatialBatchSampler(Sampler):
-    """Yield spatially-coherent batches (each batch is a local k-NN cluster).
+    """Mixed spatial batches: each batch is many small local groups whose anchors
+    are spread globally at random.
 
-    Random batching of globally-sampled S2-100K gives ~250 km within-batch
-    nearest-neighbour distances, so a physically-scaled soft loss (rho ~ 20 km)
-    never activates. Grouping each batch from a point's nearest unused neighbours
-    drops within-batch NN to the dataset's true ~17 km scale, so nearby pairs
-    actually appear and the soft penalty engages. Greedy + reshuffled per epoch.
+    A batch is built from batch_size//group_size groups; each group is a random
+    anchor + its (group_size-1) nearest unused neighbours. So the batch keeps the
+    normal globally-diverse contrastive task (random anchors) AND contains genuine
+    near pairs (the neighbours) for the soft loss to act on. group_size=2 -> random
+    anchor+nearest-neighbour pairs; group_size=batch_size -> one pure local cluster
+    (the old neighbours-only behaviour, which lacks global diversity). Reshuffled
+    each epoch.
     """
 
-    def __init__(self, coords_lonlat, batch_size, shuffle=True, seed=0):
+    def __init__(self, coords_lonlat, batch_size, group_size=None, shuffle=True, seed=0):
         from sklearn.neighbors import BallTree
         self.batch_size = batch_size
+        self.group_size = int(group_size) if group_size else batch_size
         self.shuffle = shuffle
         self.seed = seed
         self.n = len(coords_lonlat)
-        # BallTree haversine wants [lat, lon] in radians
         self.latlon = np.deg2rad(np.asarray(coords_lonlat, dtype=np.float64)[:, [1, 0]])
         self.tree = BallTree(self.latlon, metric="haversine")
         self._epoch = 0
@@ -46,19 +49,24 @@ class SpatialBatchSampler(Sampler):
         self._epoch += 1
         used = np.zeros(self.n, dtype=bool)
         order = rng.permutation(self.n) if self.shuffle else np.arange(self.n)
-        # query a generous neighbourhood so enough are still unused late in the epoch
-        k = int(min(self.n, self.batch_size * 8))
+        gs = self.group_size
+        k = int(min(self.n, gs * 8))  # query enough that gs are still unused
+        batch = []
         for anchor in order:
             if used[anchor]:
                 continue
-            _, nbr = self.tree.query(self.latlon[anchor : anchor + 1], k=k)
-            nbr = nbr[0]
-            batch = nbr[~used[nbr]][: self.batch_size].tolist()
-            if len(batch) < self.batch_size:
-                # end-of-epoch scattered remainder: top up with any unused points
-                rem = np.setdiff1d(np.where(~used)[0], np.asarray(batch, dtype=int))
-                batch += rem[: self.batch_size - len(batch)].tolist()
-            used[batch] = True
+            if gs == 1:
+                grp = [int(anchor)]
+            else:
+                _, nbr = self.tree.query(self.latlon[anchor : anchor + 1], k=k)
+                grp = [int(i) for i in nbr[0] if not used[i]][:gs]
+            for i in grp:
+                used[i] = True
+            batch.extend(grp)
+            if len(batch) >= self.batch_size:
+                yield batch[: self.batch_size]
+                batch = batch[self.batch_size :]
+        if batch:
             yield batch
 
 class CachedEmbedDataset(torch.utils.data.Dataset):
@@ -98,6 +106,7 @@ class S2GeoDataModule(pl.LightningDataModule):
         mode: str = "both",
         pin_memory: bool = False,
         spatial_batching: bool = False,
+        spatial_group_size: int = None,
         cached_emb_path: str = None,
     ):
         super().__init__()
@@ -107,6 +116,7 @@ class S2GeoDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.pin_memory = pin_memory
         self.spatial_batching = spatial_batching
+        self.spatial_group_size = spatial_group_size
         if transform=='pretrained':
             self.train_transform = get_pretrained_s2_train_transform(resize_crop_size=crop_size)
         elif transform=='default':
@@ -153,7 +163,8 @@ class S2GeoDataModule(pl.LightningDataModule):
         )
         if self.spatial_batching:
             sampler = SpatialBatchSampler(
-                self._coords_for(dataset), self.batch_size, shuffle=shuffle, seed=0
+                self._coords_for(dataset), self.batch_size,
+                group_size=self.spatial_group_size, shuffle=shuffle, seed=0,
             )
             return DataLoader(dataset, batch_sampler=sampler, **kw)
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=shuffle, **kw)
