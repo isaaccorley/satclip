@@ -4,7 +4,7 @@
 #SBATCH --account=bgtj-tgirails
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --gpus-per-node=1
 #SBATCH --mem=80G
 #SBATCH --time=7-00:00:00
