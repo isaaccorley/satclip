@@ -32,7 +32,7 @@ CACHED = {
 PRETRAINED = "/u/isaaccorley/github/neuralftw/weights/satclip-location-encoder.pt"
 RESULTS = f"{RUNS}/eval_results.csv"
 EVAL_SBATCH = "/u/isaaccorley/github/satclip/slurm/eval_once.sh"
-STEP, POLL = 10, 120
+STEP, POLL = 5, 90
 STOP_PATIENCE, MIN_EVALS = 3, 5   # cancel after this many declining milestones past peak
 
 
