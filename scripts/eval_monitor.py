@@ -21,11 +21,14 @@ CACHED = {
     "soft_linear(rho20)": "vit16l40c_linear",
     "soft_exp(rho20)": "vit16l40c_exp",
     "soft_sigmoid(rho20)": "vit16l40c_sigmoid",
+    "soft_linear(rho50)": "vit16l40c_linear_rho50",
+    "soft_linear(rho100)": "vit16l40c_linear_rho100",
+    "soft_linear(rho200)": "vit16l40c_linear_rho200",
 }
 PRETRAINED = "/u/isaaccorley/github/neuralftw/weights/satclip-location-encoder.pt"
 RESULTS = f"{RUNS}/eval_results.csv"
 EVAL_SBATCH = "/u/isaaccorley/github/satclip/slurm/eval_once.sh"
-STEP, POLL = 25, 180
+STEP, POLL = 10, 120
 
 
 def epoch_of(ckpt):
