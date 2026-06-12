@@ -409,6 +409,11 @@ class SatCLIP(nn.Module):
             return self.visual.conv1.weight.dtype
 
     def encode_image(self, image):
+        # A 2-D input [B, F] is a precomputed frozen-backbone pre-head feature
+        # (cached image-embedding training path): apply only the trainable head.
+        # 4-D input [B, C, H, W] is a raw image: run the full vision encoder.
+        if image.dim() == 2:
+            return self.visual.head(image.type(self.dtype))
         return self.visual(image.type(self.dtype))
 
     def encode_location(self, coords):

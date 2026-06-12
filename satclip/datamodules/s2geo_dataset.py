@@ -12,7 +12,7 @@ import torch
 import lightning.pytorch as pl
 from torch.utils.data import DataLoader, Sampler
 
-from .transforms import get_pretrained_s2_train_transform, get_s2_train_transform, get_uint16_train_transform
+from .transforms import get_pretrained_s2_train_transform, get_s2_train_transform, get_uint16_train_transform, coordinate_jitter
 
 CHECK_MIN_FILESIZE = 10000 # 10kb
 
@@ -61,6 +61,31 @@ class SpatialBatchSampler(Sampler):
             used[batch] = True
             yield batch
 
+class CachedEmbedDataset(torch.utils.data.Dataset):
+    """Precomputed frozen-backbone pre-head image features + coords (no image I/O).
+
+    Built once by scripts/cache_image_embeddings.py from the frozen MoCo ViT-S/16
+    (center crop, no augmentation -- valid because SatCLIP pretraining uses none).
+    Returns {"image": pre-head feature [F], "point": (lon,lat)}; the model's
+    encode_image applies only the trainable head to the 2-D feature. Coordinate
+    jitter is kept (a location aug, cheap). Exposes .points for SpatialBatchSampler.
+    """
+
+    def __init__(self, emb_path):
+        d = np.load(emb_path)
+        self.Z = d["Z"].astype(np.float32)        # [N, F] frozen pre-head features
+        coords = d["coords"].astype(np.float64)   # [N, 2] (lon, lat)
+        self.points = [tuple(c) for c in coords]
+        print(f"loaded {len(self.Z)} cached image embeddings dim={self.Z.shape[1]} from {emb_path}")
+
+    def __len__(self):
+        return len(self.Z)
+
+    def __getitem__(self, i):
+        point = coordinate_jitter(torch.tensor(self.points[i]))
+        return {"image": torch.from_numpy(self.Z[i]), "point": point}
+
+
 class S2GeoDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -73,8 +98,10 @@ class S2GeoDataModule(pl.LightningDataModule):
         mode: str = "both",
         pin_memory: bool = False,
         spatial_batching: bool = False,
+        cached_emb_path: str = None,
     ):
         super().__init__()
+        self.cached_emb_path = cached_emb_path
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -102,7 +129,11 @@ class S2GeoDataModule(pl.LightningDataModule):
             """)
 
     def setup(self, stage="fit"):
-        dataset = S2Geo(root=self.data_dir, transform=self.train_transform, mode=self.mode)
+        if self.cached_emb_path is not None:
+            # train on precomputed frozen-backbone pre-head image features (no image I/O)
+            dataset = CachedEmbedDataset(self.cached_emb_path)
+        else:
+            dataset = S2Geo(root=self.data_dir, transform=self.train_transform, mode=self.mode)
 
         N_val = int(len(dataset) * self.val_random_split_fraction)
         N_train = len(dataset) - N_val
