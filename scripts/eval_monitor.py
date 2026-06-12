@@ -17,6 +17,7 @@ import torch
 
 RUNS = "/projects/bgtj/isaaccorley/satclip_runs"
 CACHED = {
+    "baseline_random(rho0)": "vit16l40c_baseline_random",
     "baseline(rho0)": "vit16l40c_baseline",
     "soft_linear(rho20)": "vit16l40c_linear",
     "soft_exp(rho20)": "vit16l40c_exp",
